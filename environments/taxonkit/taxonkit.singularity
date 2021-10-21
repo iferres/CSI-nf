@@ -1,0 +1,5 @@
+Bootstrap: docker
+From: conda/miniconda3
+
+%post
+    conda install -c bioconda taxonkit
