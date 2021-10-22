@@ -23,7 +23,7 @@ process CRISPRCASFINDER {
 }
 
 process EXTRACT_SPACERS {
-    publishDir "SPACERS", mode: 'copy'
+    publishDir "$params.outdir/SPACERS", mode: 'copy'
 
     input:
     tuple val(genome_id), 
@@ -211,7 +211,7 @@ process WRITE_TSV {
 
 
 process COLLECT_RESULTS {
-    publishDir "LCA_RANKS", mode: 'copy'
+    publishDir "$params.outdir/LCA_RANKS", mode: 'copy'
 
     input:
     path("*.tsv")
