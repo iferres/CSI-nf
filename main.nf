@@ -90,6 +90,7 @@ process EXTRACT_SPACERS {
  db_path = file(params.blastdb).parent
 
 process BLASTN {
+    label 'blastn'
 
     input:
     tuple val(genome_id),
