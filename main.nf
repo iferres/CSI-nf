@@ -4,7 +4,7 @@ nextflow.enable.dsl = 2
 
 params.in = "*.fasta"
 params.outdir = "results"
-params.blastdb = "path/to/nt"
+params.blastdb = "/mnt/cive/ncbi/nt"
 //params.blastn_name = "nt"
 
 process CRISPRCASFINDER {
@@ -16,7 +16,7 @@ process CRISPRCASFINDER {
     output:
     tuple val(genome_id), path("Result*/GFF/*.gff")
 
-    shell:
+    script:
     """
     crispr-entrypoint.sh ${genome_id}.fasta
     """
@@ -38,15 +38,15 @@ process EXTRACT_SPACERS {
         optional: true
     tuple val(genome_id),
         val(contig_id),
-        path("${genome_id}_${contig_id}_sp.fasta"), 
+        path("fasta_spacers/*.fasta"), 
         emit: fasta,
         optional: true
 
-    shell:
+    script:
     """
     #!/usr/bin/env Rscript
 
-    gff <- try(read.table("${genome_id}_${contig_id}.gff"))
+    gff <- try(read.table("${genome_id}_${contig_id}.gff", stringsAsFactors=FALSE))
 
     if (class(gff)!="try-error"){
         spacers <- gff[gff\$V3=="CRISPRspacer",,drop=FALSE]
@@ -74,10 +74,14 @@ process EXTRACT_SPACERS {
             row.names = FALSE, 
             col.names = FALSE)
 
-
-        fasta <- paste0(">", paste(spacers\$V12, spacers\$V10, sep = "\\n"), collapse = "\\n")
-        cat(fasta,
-            file = "${genome_id}_${contig_id}_sp.fasta")
+        fastas <- paste(paste0(">", spacers\$V12), spacers\$V10, sep = "\\n")
+        
+        dir.create("fasta_spacers")
+        for (i in 1:length(fastas)){
+            fi <- paste0("fasta_spacers/", spacers\$V11[i], ".fasta")
+            cat(fastas[i], file = fi)
+        }
+        
     }
     """
 }
@@ -90,21 +94,23 @@ process BLASTN {
     input:
     tuple val(genome_id),
         val(contig_id),
-        path("${genome_id}_${contig_id}_sp.fasta")
+        val(spacer_id),
+        path("${genome_id}_${contig_id}_${spacer_id}.fasta")
 
     output:
     tuple val(genome_id),
         val(contig_id),
-        path("${genome_id}_${contig_id}_sp_vs_${db_name}.tab")
+        val(spacer_id),
+        path("${genome_id}_${contig_id}_${spacer_id}_vs_${db_name}.tab")
 
-    shell:
+    script:
     """
     blastn -task "megablast" \
         -evalue 1e-5 \
         -num_threads 1 \
         -db ${db_path}/${db_name} \
-        -query ${genome_id}_${contig_id}_sp.fasta \
-        -out ${genome_id}_${contig_id}_sp_vs_${db_name}.tab \
+        -query ${genome_id}_${contig_id}_${spacer_id}.fasta \
+        -out ${genome_id}_${contig_id}_${spacer_id}_vs_${db_name}.tab \
         -outfmt 6
     """
 }
@@ -115,20 +121,43 @@ process PARSE_BLASTN {
     input:
     tuple val(genome_id),
         val(contig_id),
-        path("${genome_id}_${contig_id}_sp_vs_${db_name}.tab")
+        val(spacer_id),
+        path("${genome_id}_${contig_id}_${spacer_id}_vs_${db_name}.tab")
 
     output:
-    //tuple val(genome_id),
-    //    val(contig_id),
-    //    path("${genome_id}_${contig_id}_sp_vs_${db_name}_Filt.tab")
     tuple val(genome_id),
         val(contig_id),
-        path("${genome_id}_${contig_id}_sp_vs_${db_name}_GIDS.txt")
+        val(spacer_id),
+        path("${genome_id}_${contig_id}_${spacer_id}_vs_${db_name}_GIDS.txt")
 
-    shell:
+    script:
     """
-    awk '{print \$2} ' ${genome_id}_${contig_id}_sp_vs_${db_name}.tab > \
-        ${genome_id}_${contig_id}_sp_vs_${db_name}_GIDS.txt
+    awk '{print \$2} ' ${genome_id}_${contig_id}_${spacer_id}_vs_${db_name}.tab > \
+        ${genome_id}_${contig_id}_${spacer_id}_vs_${db_name}_GIDS.txt
+    """
+}
+
+process GET_TAXID {
+    input:
+    tuple val(genome_id),
+        val(contig_id),
+        val(spacer_id),
+        path("${genome_id}_${contig_id}_${spacer_id}_vs_${db_name}_GIDS.txt")
+    
+    output:
+    tuple val(genome_id),
+        val(contig_id),
+        val(spacer_id),
+        stdout, optional: true
+        //path("${genome_id}_${contig_id}_${spacer_id}_vs_${db_name}_TAXIDS.txt")
+
+    script:
+    """
+    blastdbcmd \
+        -db ${db_path}/${db_name} \
+        -outfmt "%T" \
+        -entry_batch ${genome_id}_${contig_id}_${spacer_id}_vs_${db_name}_GIDS.txt # > \
+        # ${genome_id}_${contig_id}_${spacer_id}_vs_${db_name}_TAXIDS.txt
     """
 }
 
@@ -138,17 +167,65 @@ process LCA {
     input:
     tuple val(genome_id),
         val(contig_id),
-        path("${genome_id}_${contig_id}_sp_vs_${db_name}_GIDS.txt")
+        val(spacer_id),
+        val(stdin)
+        //path("${genome_id}_${contig_id}_${spacer_id}_vs_${db_name}_TAXIDS.txt")
 
-    shell:
-    """
-    cat ${genome_id}_${contig_id}_sp_vs_${db_name}_GIDS.txt | \
-        taxonkit --data-dir ${db_path} 
-    """
+    output:
+    tuple val(genome_id),
+        val(contig_id),
+        val(spacer_id),
+        stdout
+        //path("${genome_id}_${contig_id}_${spacer_id}_vs_${db_name}_LCA_RANK.txt")
 
+    when:
+    stdin != ""
+    
+    script:
+    """
+    echo "${stdin}" | tr '\\n' '\\t' | \
+        taxonkit --data-dir ${db_path} lca | \
+        awk '{print \$NF}' | \
+        taxonkit --data-dir ${db_path} lineage | \
+        taxonkit --data-dir ${db_path} reformat | \
+        cut -f 3
+    """
+}
+
+process WRITE_TSV {
+    input:
+    tuple val(genome_id),
+        val(contig_id),
+        val(spacer_id),
+        val(lca_ranks)
+
+    output:
+    path("${genome_id}_${contig_id}_${spacer_id}.tsv")
+
+    script:
+    """
+    echo -ne "${genome_id}\\t${contig_id}\\t${spacer_id}\\t${lca_ranks}"  \
+        > ${genome_id}_${contig_id}_${spacer_id}.tsv
+    """
 }
 
 
+process COLLECT_RESULTS {
+    publishDir "LCA_RANKS", mode: 'copy'
+
+    input:
+    path("*.tsv")
+    
+    output:
+    path("ranks.tsv")
+
+    script:
+    """
+    echo -ne "genome\\tcontig\\tspacer\\trank\\n" > ranks
+    cat *.tsv >> ranks
+    mv ranks ranks.tsv
+    """
+}
 
 Channel
   .fromPath(params.in, checkIfExists: true)
@@ -170,9 +247,31 @@ workflow {
 
     EXTRACT_SPACERS( crout_contig_ch )
 
-    BLASTN( EXTRACT_SPACERS.out.fasta )
+    EXTRACT_SPACERS.out.fasta
+        .transpose()
+        .map{it -> tuple(it[0], it[1], it[2].baseName, it[2])}
+        .set{ spacer_ch }
+        
+        //spacer_ch.view()
+
+    BLASTN( spacer_ch )
 
     PARSE_BLASTN( BLASTN.out )
 
-    LCA( PARSE_BLASTN.out )
+    GET_TAXID( PARSE_BLASTN.out )
+
+    LCA( GET_TAXID.out )
+
+    LCA.out
+        .set{ result_ranks }
+
+    WRITE_TSV( result_ranks )
+
+    WRITE_TSV.out
+        .collect()
+        .set{ collected_ch }
+
+    //collected_ch.view()
+
+    COLLECT_RESULTS( collected_ch )
 }
